@@ -3,6 +3,7 @@ npm-debug.log
 package-lock.json
 test
 temp*
+.idea/
 
 .env
 

@@ -1,12 +1,12 @@
 'use strict';
 require('dotenv').config();
 
-const httpstatus = require('./httpstatus');
 const signature = require('./verifySignature');
 const axios = require('axios');
 const qs = require('qs');
 const express = require('express');
 const bodyParser = require('body-parser');
+const env = require('dotenv').config().parsed;
 
 const apiUrl = 'https://slack.com/api';
 
@@ -27,12 +27,9 @@ const rawBodyBuffer = (req, res, buf, encoding) => {
 app.use(bodyParser.urlencoded({verify: rawBodyBuffer, extended: true }));
 app.use(bodyParser.json({ verify: rawBodyBuffer }));
 
-app.use(express.static(__dirname + '/../')); // html
-app.use(express.static(__dirname + '/../public')); // images
-
 // Static Web UI
 app.get('/', (req, res) => {
-  res.sendFile('index.html');
+  res.send('hello world');
 });
 
 /*
@@ -90,10 +87,66 @@ app.get('/auth', (req, res) => {
 
 /* 
  * Slash Command
- * Endpoint to receive /httpstatus slash command from Slack.
+ * Endpoint to receive weatherbot command from Slack.
  */
 
-app.post('/command', (req, res) => {
+app.post('/bot', (req, res) => {
+  if(!signature.isVerified(req)) { // the request is NOT coming from Slack!
+    res.sendStatus(404);
+    return;
+  }
+
+  // res.sendStatus(200);
+  let challenge = JSON.parse(req.rawBody).challenge;
+  // res.send({challenge:challenge}) // verify bot URL
+
+  let message = {};
+  if (req.body.event.type === 'app_mention') {
+    const channel = req.body.event.channel;
+    const input = req.body.event.text.split('> ')[1].split(':');
+    const type = input[0] === 'city' ? 'q' : 'zip';
+    const loc = input[1];
+    const query = `http://api.openweathermap.org/data/2.5/weather?${type}=${loc},us&APPID=8df448f87822a2ea04fd6f0dc4e1e7c9`;
+    axios.get(query)
+        .then((result)=>{
+          const headers = {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Authorization': `Bearer ${env.SLACK_BOT_TOKEN}`
+          };
+
+          let current = kelvinToFarenheit(result.data.main.temp),
+              high = kelvinToFarenheit(result.data.main.temp_max),
+              low = kelvinToFarenheit(result.data.main.temp_max);
+
+          message = `${result.data.name} \n Current: ${current} \n Low: ${low} \n High: ${high}`;
+
+          axios.post(`https://slack.com/api/chat.postMessage`, {text: message, channel:channel}, {headers:headers}).then((res)=>{
+            console.log(res.data, '======RESULT======');
+          }).catch((e)=>{console.log(e.message)});
+
+        }).catch((e)=>{console.log(e.message)});
+
+  } else {
+    message = {
+      response_type: 'ephemeral', // private message
+      challenge: challenge,
+      text: ':sunny: How to use weatherbot',
+      attachments:[
+        {
+          text: 'Type the keyword followed by city or zipcode after the bot, _e.g._ `@weatherbot zip:90210 or @weatherbot city:Los Angeles`'
+        }
+      ]
+    };
+    res.json(message);
+  }
+
+});
+
+/*
+ * Slash Command
+ * Endpoint to receive /weather command from Slack.
+ */
+app.post('/slash', (req, res) => {
   if(!signature.isVerified(req)) { // the request is NOT coming from Slack!
     res.sendStatus(404);
     return;
@@ -101,47 +154,51 @@ app.post('/command', (req, res) => {
 
   let message = {};
   if (req.body.text) {
-    const code = req.body.text;
+    const input = req.body.text.split(':');
+    const type = input[0] === 'city' ? 'q' : 'zip';
+    const loc = input[1];
+    const query = `http://api.openweathermap.org/data/2.5/weather?${type}=${loc},us&APPID=8df448f87822a2ea04fd6f0dc4e1e7c9`;
+    axios.get(query)
+        .then((result)=>{
 
-    if(! /^\d+$/.test(code)) { // not a digit
-      res.send(':crying_cat_face:U R DOIN IT WRONG. Enter a status code like 200');
-      return;
-    }
+          let current = kelvinToFarenheit(result.data.main.temp),
+              high = kelvinToFarenheit(result.data.main.temp_max),
+              low = kelvinToFarenheit(result.data.main.temp_max);
 
-    const status = httpstatus[code];
-    if(!status) {
-      res.send('Bummer, ' + code + ' is not a HTTP status code :scream_cat:');
-      return;
-    }
+          message = {
+              response_type: 'in_channel', // public to the channel
+              attachments:[
+                  {
+                      pretext: `${result.data.name} \n Current: ${current} \n Low: ${low} \n High: ${high}`
+                  }
+              ]
+          };
 
-    message = {
-      response_type: 'in_channel', // public to the channel
-      attachments:[
-        {
-          pretext: `${code}: ${status}`,
-          image_url: `https://${req.hostname}/images/${code}.jpg`
-        }
-      ]
-    };
+          res.json(message);
+        }).catch((e)=>{console.log(e.message)});
+
   } else {
     message = {
       response_type: 'ephemeral', // private message
-      text: ':cat: How to use `/httpstatus` command:',
+      text: ':sunny: How to use weatherbot',
       attachments:[
         {
-          text: 'Type a status code after the command, _e.g._ `/httpstatus 404`'
+          text: 'Type the keyword followed by city or zipcode after the command, _e.g._ `/weatherbot zip:90210 or /weatherbot city:Los Angeles`'
         }
       ]
     };
+    res.json(message);
   }
 
-  res.json(message);
 });
+
+const kelvinToFarenheit = (temp) => {
+  return ((temp * 9 / 5) - 459.67).toFixed(2).toString() + ' ºF';
+};
 
 const server = app.listen(process.env.PORT || 5000, () => {
   console.log('Express server listening on port %d in %s mode', server.address().port, app.settings.env);
 });
-
 
 
 /* Additional notes:
